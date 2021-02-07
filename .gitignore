@@ -5,6 +5,9 @@
 # Files created by mac
 *.DS_Store
 
+# Jupyter Notebook
+.ipynb_checkpoints
+
 # Files created by runs
 chains/*
 

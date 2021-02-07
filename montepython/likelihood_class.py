@@ -2641,3 +2641,373 @@ class Likelihood_isw(Likelihood):
         chi2_cross=np.asscalar(np.dot(self.cl_binned_cross-A*b*cl_binned_cross_theory,np.dot(np.linalg.inv(self.cov_binned_cross),self.cl_binned_cross-A*b*cl_binned_cross_theory)))
         chi2_auto=np.asscalar(np.dot(self.cl_binned_auto-b**2*cl_binned_auto_theory,np.dot(np.linalg.inv(self.cov_binned_auto),self.cl_binned_auto-b**2*cl_binned_auto_theory)))
         return -0.5*(chi2_cross+chi2_auto)
+
+
+
+###################################
+# SPTPol LIKELIHOOD
+# TE,EE spectra with window functions
+# Henning et al., 2017
+###################################
+class Likelihood_sptpol_500d_TEEE(Likelihood):
+
+    def __init__(self, path, data, command_line):
+
+        Likelihood.__init__(self, path, data, command_line)
+
+        self.need_cosmo_arguments(data, {'lensing': 'yes', 'output': 'tCl lCl pCl'})
+
+        desc_file = np.loadtxt(os.path.join(self.data_directory, self.sptpol_TEEE_desc_file))
+        self.nbin=int(desc_file[0][0])
+        nfreq=int(desc_file[0][1])
+        spt_windows_lmin=int(desc_file[1][0])
+        spt_windows_lmax=int(desc_file[1][1])
+        self.spt_lmin = spt_windows_lmin
+        self.spt_lrange=spt_windows_lmax-spt_windows_lmin+1
+        print("nbin=",self.nbin,nfreq,spt_windows_lmin,spt_windows_lmax)
+
+        if (nfreq != 1):
+            raise io_mp.LikelihoodError("Sorry, current code wont work for multiple freqs")
+        #Should be three for SPTpol (TT,TE,EE, although mostly ignore TT).
+        self.bands_per_freq = 3 
+
+        nband = self.bands_per_freq*(nfreq)
+        #Cov doesn't know about TT. Number of raws.
+        self.nall = self.nbin*(nfreq * (self.bands_per_freq - 1))
+
+        self.need_cosmo_arguments(data, {'l_max_scalars': spt_windows_lmax+1})
+        if (spt_windows_lmin < 2 or spt_windows_lmin >= spt_windows_lmax):
+            raise io_mp.LikelihoodError("Invalid lranges for sptpol")
+
+        self.ells = np.zeros(self.spt_lrange+2, 'float64')
+        self.cl_to_dl_conversion = np.zeros(self.spt_lrange+2, 'float64')
+        self.rawspec_factor = np.zeros(self.spt_lrange+2, 'float64')
+        self.deriv_factor = np.zeros(self.spt_lrange, 'float64')
+        for i in range(self.spt_lrange+2):
+            self.ells[i] = spt_windows_lmin-1+i
+            self.cl_to_dl_conversion[i] = self.ells[i]*(self.ells[i] + 1.)/2./np.pi
+            self.rawspec_factor[i] = self.ells[i]**2/self.cl_to_dl_conversion[i]
+        for i in range(self.spt_lrange):
+            self.deriv_factor[i] = 0.5/self.ells[i+1]
+
+        #Read in bandpowers
+        #Should be TE, EE, TT, in that order from SPTpol analysis.
+        self.spec = np.zeros((self.nbin, nband), 'float64')
+        datafile = open(os.path.join(self.data_directory, self.sptpol_TEEE_bp_file), 'r')
+        for i in range(nband):
+            for j in range(self.nbin):
+                line = datafile.readline()
+                self.spec[j][i] = float(line.split()[1])
+        datafile.close()
+
+        #Read in covariance
+        #Should be TE, EE
+        self.cov = np.zeros((self.nall, self.nall), 'float64')
+        datafile = open(os.path.join(self.data_directory, self.sptpol_TEEE_cov_file), 'r')
+        for i in range(self.nall):
+            for j in range(self.nall):
+                line = datafile.readline()
+                self.cov[j][i] = float(line.split()[0])
+        datafile.close()
+
+        if (self.sptpol_EEonly or self.sptpol_TEonly):
+            print("Zero off-diagonal cov blocks...")
+            for i in range(nbin):
+                for j in range(nbin):
+                    self.cov[j + nbin][i] = 0.
+                    self.cov[j][i + nbin] = 0.
+            #Explode TE auto-block if we only want EE.
+            if self.sptpol_EEonly:
+                print("Exploding TE auto-cov block...")
+                for i in range(self.nbin):
+                    tmp=self.cov[i][i]*1.e24
+                    for j in range(self.nbin):
+                        self.cov[j][i] = 0.
+                    self.cov[i][i] = tmp
+            #Explode TT auto-block if we only want EE.
+            if self.sptpol_TEonly:
+                print("Exploding EE auto-cov block...")
+                for i in range(self.nbin,2*self.nbin):
+                    tmp=self.cov[i][i]*1.e24
+                    for j in range(self.nbin,2*self.nbin):
+                        self.cov[j][i] = 0.
+                    self.cov[i][i] = tmp
+
+        print("First entry of covariance matrix: ",self.cov[0][0])
+
+        #Read in windows
+        #Should be TE, EE
+        self.windows = np.zeros((self.spt_lrange, self.nall), 'float64')
+        for i in range(self.nall):
+            i_s=repr(i+1)
+            datafile = open(os.path.join(self.data_directory,self.sptpol_TEEE_window_dir,'window_' + i_s), 'r')
+            for j in range(self.spt_lrange):
+                line = datafile.readline()
+                self.windows[j][i] = float(line.split()[1])
+            datafile.close()
+
+        #get beam error term
+        neff = self.nall
+        n_beam_terms = 2
+        self.beam_err = np.zeros((neff, n_beam_terms), 'float64')
+        datafile = open(os.path.join(self.data_directory,self.sptpol_TEEE_beam_file), 'r')
+        for i in range(n_beam_terms):
+            for j in range(neff):
+                line = datafile.readline()
+                self.beam_err[j][i] = float(line.split()[1])
+        datafile.close()
+
+        print("Successfully initialized SPTPOL_TEEE data...")     
+        # end of initialisation
+
+        return
+
+    def loglkl(self, cosmo, data):
+
+        #DataParams for SPTpol likelihood are: [kappa, CzeroTE, Czero_EE, Adust_TE, alpha_TE, Adust_EE, alpha_EE,MapTcal, MapPcal, BeamFac]
+
+        dls = np.zeros((self.spt_lrange+2,2),'float64')
+        d3000 = 3000.*3001./2./np.pi
+        beta = 0.0012309
+        dipole_cosine = -0.4033
+        deltacb = np.zeros(self.nall,'float64')
+        tmp2cb = np.zeros(self.nall,'float64')
+        BeamFac = np.zeros(self.nall,'float64')
+        tmpcb = np.zeros(self.nbin,'float64')
+        PoissonLevels = np.zeros(2,'float64')
+        ADust = np.zeros(2,'float64')
+        alphaDust = np.zeros(2,'float64')
+        CalFactors = np.zeros(3,'float64')
+        arr = np.zeros(2,'float64')
+        arr7 = np.zeros(7,'float64')
+        BeamFactors = np.zeros(2,'float64')
+
+        dl_fgs = np.zeros(self.spt_lrange,'float64')
+        cl_derivative = np.zeros((self.spt_lrange,2),'float64')
+        aberration = np.zeros((self.spt_lrange,2),'float64')
+        raw_spectra = np.zeros((self.spt_lrange+2,2),'float64')
+
+        cl = self.get_cl(cosmo)
+        for i in range(self.spt_lrange+2):
+            dls[i,0] = cl['te'][int(self.ells[i])]*self.ells[i]*(self.ells[i]+1)/2./np.pi
+            dls[i,1] = cl['ee'][int(self.ells[i])]*self.ells[i]*(self.ells[i]+1)/2./np.pi
+
+        #Calculate derivatives for this position in parameter space.
+        for i in range(self.spt_lrange+2):
+            raw_spectra[i][0] = self.rawspec_factor[i] * dls[i,0]
+            raw_spectra[i][1] = self.rawspec_factor[i] * dls[i,1]
+        for i in range(self.spt_lrange):
+            cl_derivative[i][0] = self.deriv_factor[i] * (raw_spectra[i+2][0] - raw_spectra[i][0])
+            cl_derivative[i][1] = self.deriv_factor[i] * (raw_spectra[i+2][1] - raw_spectra[i][1])
+
+        #Also get derives of the Dls for use with aberration corrections.
+        if self.correct_aberration:
+            for i in range(self.spt_lrange):
+                aberration[i][0] = 0.5 * (dls[i+2][0]-dls[i][0])
+                aberration[i][0] = (-1*beta*dipole_cosine) * self.ells[i+1] * aberration[i][0]
+                aberration[i][1] = 0.5 * (dls[i+2][1]-dls[i][1])
+                aberration[i][1] = (-1*beta*dipole_cosine) * self.ells[i+1] * aberration[i][1]
+
+        #DataParams for SPTpol likelihood are: [MapTcal, MapPcal, Czero_EE, CzeroTE, kappa, Adust_TE, alpha_TE, Adust_EE, alpha_EE]
+        czero_psTE_150 = data.mcmc_parameters['czero_psTE_150']['current']*data.mcmc_parameters['czero_psTE_150']['scale']
+        czero_psEE_150 = data.mcmc_parameters['czero_psEE_150']['current']*data.mcmc_parameters['czero_psEE_150']['scale']
+        ADust_TE = data.mcmc_parameters['ADust_TE']['current']*data.mcmc_parameters['ADust_TE']['scale']
+        ADust_EE = data.mcmc_parameters['ADust_EE']['current']*data.mcmc_parameters['ADust_EE']['scale']
+        alphaDust_TE = data.mcmc_parameters['alphaDust_TE']['current']*data.mcmc_parameters['alphaDust_TE']['scale']
+        alphaDust_EE = data.mcmc_parameters['alphaDust_EE']['current']*data.mcmc_parameters['alphaDust_EE']['scale']
+        mapTcal = data.mcmc_parameters['mapTcal']['current']*data.mcmc_parameters['mapTcal']['scale']
+        mapPcal = data.mcmc_parameters['mapPcal']['current']*data.mcmc_parameters['mapPcal']['scale']
+        beam1 = data.mcmc_parameters['beam1']['current']*data.mcmc_parameters['beam1']['scale']
+        beam2 = data.mcmc_parameters['beam2']['current']*data.mcmc_parameters['beam2']['scale']
+        Kappa = data.mcmc_parameters['kappa']['current']*data.mcmc_parameters['kappa']['scale']
+        #TE/EE Poisson
+        PoissonLevels[0] = czero_psTE_150/d3000
+        PoissonLevels[1] = czero_psEE_150/d3000
+        #TE dust amplitude, in Dl, NOT Cl yet...
+        ADust[0] = ADust_TE
+        #TE dust spectral index (for Dl).
+        alphaDust[0] = alphaDust_TE
+        #EE dust amplitude, in Dl, NOT Cl yet...
+        ADust[1] = ADust_EE
+        #EE dust spectral index (for Dl).
+        alphaDust[1] = alphaDust_EE
+        #TT, TE, EE
+        for i in range(3):
+            CalFactors[i] = (mapTcal)**2*(mapPcal)**i
+        BeamFactors[0] = beam1
+        BeamFactors[1] = beam2
+
+        #Don't care about TT. Just use it for leakage, which is turned off by default.
+        for k in range(self.bands_per_freq-1):
+            #First get model foreground spectrum (in Cl).
+            #Note all the foregrounds are recorded in Dl at l=3000, so we divide by d3000 to get to a normalized Cl spectrum.
+
+            #Start with Poisson power and subtract the kappa parameter for super sample lensing.
+            for j in range(self.spt_lrange):
+                dl_fgs[j] = (PoissonLevels[k] - Kappa*cl_derivative[j][k]) * self.cl_to_dl_conversion[j+1]
+                #Now add model CMB.
+                dl_fgs[j] = dl_fgs[j] + dls[j+1][k]
+                #Do we want to correct for aberration?
+                dl_fgs[j] = dl_fgs[j] + aberration[j][k]
+                #add dust foreground model (defined in Dl)
+                dl_fgs[j] = dl_fgs[j] + ADust[k]*(self.ells[j+1]/80.)**(alphaDust[k]+2.)
+
+            #Now bin into bandpowers with the window functions.
+            tmpcb = np.dot(dl_fgs,self.windows[:,self.nbin*k:self.nbin+self.nbin*k])
+            #scale theory spectrum by calibration:
+            tmpcb = tmpcb/CalFactors[k+1]
+            tmp2cb[self.nbin*k:self.nbin+self.nbin*k] = tmpcb[:]
+
+        BeamFac[:] = 1.
+        for i in range(2):
+            for j in range(self.nall):
+                BeamFac[j] = BeamFac[j] * (1. + self.beam_err[j][i] * BeamFactors[i])
+
+        deltacb = tmp2cb[:] * BeamFac[:]
+        for k in range(self.bands_per_freq-1):
+            deltacb[self.nbin*k:self.nbin+self.nbin*k] = deltacb[self.nbin*k:self.nbin+self.nbin*k] - self.spec[:,k]
+
+        chi2 = 0.
+        chi2 = np.dot(deltacb, np.dot(np.linalg.inv(self.cov), deltacb))
+        #print("SPTpolEELnLike=", 0.5 * chi2)
+
+        #beam prior
+        chi2 += sum(BeamFactors**2)
+        #print("PriorLnLike=", 0.5 * sum(BeamFactors**2))
+
+        #Add Gaussian prior for temperature calibration.
+        if self.sptpol_tcal_prior:
+            chi2 += (np.log(mapTcal/self.sptpol_meanTcal)/np.log(1.+self.sptpol_sigmaTcal))**2
+            #print("PriorLnLike=", 0.5 * (np.log(mapTcal/self.sptpol_meanTcal)/np.log(1.+self.sptpol_sigmaTcal))**2)
+
+        #Add Gaussian prior for polarization efficiency.
+        if self.sptpol_pcal_prior:
+            chi2 += (np.log(mapPcal/self.sptpol_meanPcal)/np.log(1.+self.sptpol_sigmaPcal))**2
+            #print("PriorLnLike=", 0.5 * (np.log(mapPcal/self.sptpol_meanPcal)/np.log(1.+self.sptpol_sigmaPcal))**2)
+
+        #Add Gaussian prior for kappa.
+        if self.sptpol_kappa_prior:
+            chi2 += ((Kappa - self.sptpol_meankappa)/self.sptpol_sigmakappa)**2
+            #print("PriorLnLike=", 0.5 * ((Kappa - self.sptpol_meankappa)/self.sptpol_sigmakappa)**2)
+
+        #Add Gaussian prior for alphaTE.
+        if self.sptpol_alphaTE_prior:
+            chi2 += ((alphaDust_TE - self.sptpol_meanAlphaTE)/self.sptpol_sigmaAlphaTE)**2
+            #print("PriorLnLike=", 0.5 * ((alphaDust_TE - self.sptpol_meanAlphaTE)/self.sptpol_sigmaAlphaTE)**2)
+
+        #Add Gaussian prior for alphaEE.
+        if self.sptpol_alphaEE_prior:
+            chi2 += ((alphaDust_EE - self.sptpol_meanAlphaEE)/self.sptpol_sigmaAlphaEE)**2
+            #print("PriorLnLike=", 0.5 * ((alphaDust_EE - self.sptpol_meanAlphaEE)/self.sptpol_sigmaAlphaEE)**2)
+
+        lkl = -0.5 * chi2
+
+        return lkl
+
+###################################
+# SPTPol lensing
+# Lensing power spectra with window functions
+# Bianchini et al., 2019
+###################################
+class Likelihood_sptpol_500d_lens(Likelihood):
+
+    def __init__(self, path, data, command_line):
+
+        Likelihood.__init__(self, path, data, command_line)
+
+        self.need_cosmo_arguments(data, {'lensing': 'yes', 'output': 'tCl lCl pCl'})
+        self.need_cosmo_arguments(data, {'l_max_scalars': self.cl_lmax})
+        self.need_cosmo_arguments(data, {'non linear': 'halofit'})
+
+        self.cl_lrange=self.cl_lmax-self.cl_lmin+1
+        self.ells = np.zeros(self.cl_lrange, 'float64')
+        for i in range(self.cl_lrange):
+            self.ells[i] = self.cl_lmin+i
+
+        #Read bandpowers
+        self.ClHat = np.zeros(self.nbins, 'float64')
+        datafile = open(os.path.join(self.data_directory, self.cl_hat_file), 'r')
+        for i in range(self.nbins):
+            line = datafile.readline()
+            while line.find('#') != -1:
+                line = datafile.readline()
+            self.ClHat[i] = float(line.split()[4])
+        datafile.close()
+
+        #Read fiducial corrections
+        self.FiducialCorrection = np.zeros(self.nbins, 'float64')
+        datafile = open(os.path.join(self.data_directory, self.linear_correction_fiducial_file), 'r')
+        for i in range(self.nbins):
+            line = datafile.readline()
+            while line.find('#') != -1:
+                line = datafile.readline()
+            self.FiducialCorrection[i] = float(line.split()[1])
+        datafile.close()
+
+        #Read covariance
+        self.cov = np.zeros((self.nbins, self.nbins), 'float64')
+        self.cov = np.loadtxt(os.path.join(self.data_directory, self.covmat_fiducial))
+
+        #Read windows
+        self.windows = np.zeros((self.cl_lrange, self.nbins), 'float64')
+        #Cpp 100<=l<=2000
+        delta = 98
+        for i in range(self.nbins):
+            i_s=repr(i+1)
+            datafile = open(os.path.join(self.data_directory,self.bin_window_dir,'window' + i_s + '.dat'), 'r')
+            line = datafile.readlines()
+            lmin = int(line[0].split()[0])
+            lmax = int(line[-1].split()[0])
+            for j in range(0,lmax-lmin+1):
+                self.windows[j+delta][i] = float(line[j].split()[1])
+            delta += lmax-lmin+1
+            datafile.close()
+
+        #Read windows correction
+        self.windows_corr = np.zeros((self.cl_lrange, 4, self.nbins), 'float64')
+        #Ctt,Cee,Cte,Cpp 0<=l<=2001
+        for i in range(self.nbins):
+            i_s=repr(i+1)
+            datafile = open(os.path.join(self.data_directory,self.linear_correction_bin_window_dir,'window' + i_s + '.dat'), 'r')
+            line = datafile.readlines()
+            lmin = int(line[0].split()[0])
+            lmax = int(line[-1].split()[0])
+            delta = self.cl_lmin - lmin
+            for k in range(0,4):
+                for j in range(0,self.cl_lrange):
+                    self.windows_corr[j][k][i] = float(line[j+delta].split()[k+1])
+            datafile.close()
+
+        return
+
+    def loglkl(self, cosmo, data):
+
+        clth = np.zeros((self.cl_lrange,4),'float64')
+        clthb = np.zeros(self.nbins,'float64')
+        deltab = np.zeros(self.nbins,'float64')
+
+        cl = self.get_cl(cosmo)
+        for i in range(self.cl_lrange):
+            clth[i,0] = cl['tt'][int(self.ells[i])]*self.ells[i]*(self.ells[i]+1)/2./np.pi
+            clth[i,1] = cl['ee'][int(self.ells[i])]*self.ells[i]*(self.ells[i]+1)/2./np.pi
+            clth[i,2] = cl['te'][int(self.ells[i])]*self.ells[i]*(self.ells[i]+1)/2./np.pi
+            clth[i,3] = cl['pp'][int(self.ells[i])]*self.ells[i]**2*(self.ells[i]+1)**2/2./np.pi
+
+        #Convert to bandpowers
+        clthb = np.dot(clth[:,3],self.windows)
+
+        #Windows correction
+        for k in range(4):
+            clthb += np.dot(clth[:,k],self.windows_corr[:,k,0:self.nbins])
+
+        #Fiducial correction
+        clthb += - self.FiducialCorrection
+
+        Aphiphi = data.mcmc_parameters['Aphiphi']['current']*data.mcmc_parameters['Aphiphi']['scale']
+        deltab = Aphiphi*clthb - self.ClHat
+
+        chi2 = np.dot(deltab, np.dot(np.linalg.inv(self.cov), deltab))
+
+        lkl = -0.5 * chi2
+
+        return lkl

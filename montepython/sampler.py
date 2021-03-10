@@ -697,14 +697,17 @@ def compute_lkl(cosmo, data):
     if cosmo.state and data.need_cosmo_update is True:
         cosmo.struct_cleanup()
 
+    # skip this step
+    if data.skip:
+        return data.boundary_loglike
+
     # If the data needs to change, then do a normal call to the cosmological
     # compute function. Note that, even if need_cosmo update is True, this
     # function must be called if the jumping factor is set to zero. Indeed,
     # this means the code is called for only one point, to set the fiducial
     # model.
-    if ((data.need_cosmo_update) or
-            (not cosmo.state) or
-            (data.jumping_factor == 0)):
+    if ((data.need_cosmo_update) or (not cosmo.state) or
+            (data.jumping_factor == 0) or (data.first_step)):
 
         # Prepare the cosmological module with the new set of parameters
         cosmo.set(data.cosmo_arguments)

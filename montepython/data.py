@@ -34,6 +34,7 @@ except ImportError:
             "to manually install the ordereddict package by placing" +
             "the file ordereddict.py in your Python Path")
 
+from ic_search_ode_ads import scf_ic_finder
 
 class Data(object):
     """
@@ -116,6 +117,17 @@ class Data(object):
 
         # Initialisation of the random seed
         rd.seed()
+
+        # Object to search initial condition for EDE models
+        # self.finder = scf_ic_finder(model='supergravity')
+        self.finder = scf_ic_finder()
+        # self.finder = scf_ic_finder(model='late_infl')
+
+        # Something need to be calculated at the first step
+        self.first_step = True
+
+        # Whether skip this step
+        self.skip = False
 
         # Store the parameter file
         self.param = command_line.param
@@ -996,6 +1008,25 @@ class Data(object):
             elif elem == 'w0wa':
                 self.cosmo_arguments['wa_fld'] = self.cosmo_arguments[elem] - self.cosmo_arguments['w0_fld']
                 del self.cosmo_arguments[elem]
+            elif elem == 'omega_scf':
+                if self.need_cosmo_update or self.first_step:
+                    omega_m = self.cosmo_arguments['omega_b'] + self.cosmo_arguments['omega_cdm']
+                    H0 = self.cosmo_arguments['H0']
+                    self.finder.set_cosmo_params(omega_m=omega_m, H0=H0)
+                    scf_f = self.cosmo_arguments['omega_scf']
+                    ln1plusz_c = self.cosmo_arguments['ln(1+z_c)']
+                    ads = self.cosmo_arguments.get('ads', 3.79e-4)
+                    self.finder.set_MCMC_params(scf_f=scf_f, ln1plusz_c=ln1plusz_c, ads=ads)
+                    rlt = self.finder.search()
+                    if rlt == 'skip':
+                        self.skip = True
+                    else:
+                        self.skip = False
+                        self.mcmc_parameters['ln(1+z_c)']['current'] = rlt[1] / self.mcmc_parameters['ln(1+z_c)']['scale']
+                        self.cosmo_arguments['scf_parameters'] = rlt[0]
+                del self.cosmo_arguments['omega_scf']
+                del self.cosmo_arguments['ln(1+z_c)']
+                del self.cosmo_arguments['ads']
 
             # Finally, deal with all the parameters ending with __i, where i is
             # an integer. Replace them all with their name without the trailing

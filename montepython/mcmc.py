@@ -472,6 +472,8 @@ def chain(cosmo, data, command_line):
 
     # Compute the starting Likelihood
     loglike = sampler.compute_lkl(cosmo, data)
+    # First step is done
+    data.first_step = False
 
     # Choose this step as the last accepted value
     # (accept_step), and modify accordingly the max_loglike

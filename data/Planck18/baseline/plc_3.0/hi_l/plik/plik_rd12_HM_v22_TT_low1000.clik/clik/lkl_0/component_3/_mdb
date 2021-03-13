@@ -1,0 +1,6 @@
+ndim int 1
+component_type str sz
+ndef int 4
+component_name str sz
+lmin int 30
+lmax int 999

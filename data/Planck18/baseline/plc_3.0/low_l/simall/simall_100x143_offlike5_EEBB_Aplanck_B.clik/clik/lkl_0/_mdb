@@ -1,0 +1,11 @@
+stepBB float 0.0001
+lmin int 2
+nell int 28
+nstepsEE int 3000
+lmax int 29
+nstepsBB int 2000
+stepEE float 0.0001
+free_calib str A_planck
+lkl_type str simall
+pipeid str simall_EE_BB_TE
+unit int 1

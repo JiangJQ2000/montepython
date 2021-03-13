@@ -1,0 +1,6 @@
+.waf*
+.lock*
+bin/
+include/
+lib/
+share/

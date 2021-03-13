@@ -1,0 +1,70 @@
+# Priors recommended for plik v21
+
+Priors are recommended for the dust amplitudes as well as the calibration parameters.
+
+## CIB
+  cib_index  = -1.3 
+
+## Dust priors
+
+### TT
+
+    gal545_A_100     = 8.6  ± 2
+    gal545_A_143     = 10.6 ± 2
+    gal545_A_143_217 = 23.5 ± 8.5
+    gal545_A_217     = 91.9 ± 20
+
+### EE
+    # the EE dust levels should always be set to the central values of the prior. 
+    # the associated errors are only to be used in specific cases
+    galf_EE_A_100      = 0.055 (± 0.014)
+    galf_EE_A_100_143  = 0.040 (± 0.010)
+    galf_EE_A_100_217  = 0.094 (± 0.023)
+    galf_EE_A_143      = 0.086 (± 0.022)
+    galf_EE_A_143_217  = 0.21  (± 0.051)
+    galf_EE_A_217      = 0.70  (± 0.18)
+
+    galf_EE_index      = -2.4
+
+### TE
+    galf_TE_A_100     = 0.13  ± 0.042
+    galf_TE_A_100_143 = 0.13  ± 0.036
+    galf_TE_A_100_217 = 0.46  ± 0.09
+    galf_TE_A_143     = 0.207 ± 0.072
+    galf_TE_A_143_217 = 0.69  ± 0.09 
+    galf_TE_A_217     = 1.938 ± 0.54
+
+    galf_TE_index      = -2.4
+
+## Cal priors
+
+    calib_100T = 1.0002  ± 0.0007
+    calib_217T = 0.99805 ± 0.00065
+    # the P calib factor should always be set to the central values of the prior. 
+    calib_100P = 1.021  
+    calib_143P = 0.966  
+    calib_217P = 1.040  
+
+
+## EE End2End correlated noise
+   # should always be set to one (parameter are multiplicative factors)
+
+   A_cnoise_e2e_100_100_EE = 1
+   A_cnoise_e2e_143_143_EE = 1
+   A_cnoise_e2e_217_217_EE = 1
+
+
+## Subpixel effect 
+   # should always be set to one (parameter are multiplicative factors)
+   
+   A_sbpx_100_100_TT = 1
+   A_sbpx_143_143_TT = 1
+   A_sbpx_143_217_TT = 1
+   A_sbpx_217_217_TT = 1
+ 
+   A_sbpx_100_100_EE = 1
+   A_sbpx_100_143_EE = 1
+   A_sbpx_100_217_EE = 1
+   A_sbpx_143_143_EE = 1
+   A_sbpx_143_217_EE = 1
+   A_sbpx_217_217_EE = 1

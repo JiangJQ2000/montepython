@@ -2678,7 +2678,7 @@ class Likelihood_sptpol_500d_TEEE(Likelihood):
         if (spt_windows_lmin < 2 or spt_windows_lmin >= spt_windows_lmax):
             raise io_mp.LikelihoodError("Invalid lranges for sptpol")
 
-        self.ells = np.zeros(self.spt_lrange+2, 'float64')
+        self.ells = np.zeros(self.spt_lrange+2, 'uint64')
         self.cl_to_dl_conversion = np.zeros(self.spt_lrange+2, 'float64')
         self.rawspec_factor = np.zeros(self.spt_lrange+2, 'float64')
         self.deriv_factor = np.zeros(self.spt_lrange, 'float64')
@@ -2688,15 +2688,19 @@ class Likelihood_sptpol_500d_TEEE(Likelihood):
             self.rawspec_factor[i] = self.ells[i]**2/self.cl_to_dl_conversion[i]
         for i in range(self.spt_lrange):
             self.deriv_factor[i] = 0.5/self.ells[i+1]
+        
+        beta = 0.0012309
+        dipole_cosine = -0.4033
+        self.aberration_factor = (-1*beta*dipole_cosine) * self.ells[1:-1] / 2
 
         #Read in bandpowers
         #Should be TE, EE, TT, in that order from SPTpol analysis.
-        self.spec = np.zeros((self.nbin, nband), 'float64')
+        self.spec = np.zeros((nband, self.nbin), 'float64')
         datafile = open(os.path.join(self.data_directory, self.sptpol_TEEE_bp_file), 'r')
         for i in range(nband):
             for j in range(self.nbin):
                 line = datafile.readline()
-                self.spec[j][i] = float(line.split()[1])
+                self.spec[i][j] = float(line.split()[1])
         datafile.close()
 
         #Read in covariance
@@ -2733,6 +2737,7 @@ class Likelihood_sptpol_500d_TEEE(Likelihood):
                     self.cov[i][i] = tmp
 
         print("First entry of covariance matrix: ",self.cov[0][0])
+        self.cov_inv = np.linalg.inv(self.cov)
 
         #Read in windows
         #Should be TE, EE
@@ -2748,12 +2753,12 @@ class Likelihood_sptpol_500d_TEEE(Likelihood):
         #get beam error term
         neff = self.nall
         n_beam_terms = 2
-        self.beam_err = np.zeros((neff, n_beam_terms), 'float64')
+        self.beam_err = np.zeros((n_beam_terms, neff), 'float64')
         datafile = open(os.path.join(self.data_directory,self.sptpol_TEEE_beam_file), 'r')
         for i in range(n_beam_terms):
             for j in range(neff):
                 line = datafile.readline()
-                self.beam_err[j][i] = float(line.split()[1])
+                self.beam_err[i][j] = float(line.split()[1])
         datafile.close()
 
         print("Successfully initialized SPTPOL_TEEE data...")     
@@ -2765,14 +2770,12 @@ class Likelihood_sptpol_500d_TEEE(Likelihood):
 
         #DataParams for SPTpol likelihood are: [kappa, CzeroTE, Czero_EE, Adust_TE, alpha_TE, Adust_EE, alpha_EE,MapTcal, MapPcal, BeamFac]
 
-        dls = np.zeros((self.spt_lrange+2,2),'float64')
+        dls = np.zeros((2,self.spt_lrange+2),'float64')
         d3000 = 3000.*3001./2./np.pi
         beta = 0.0012309
         dipole_cosine = -0.4033
-        deltacb = np.zeros(self.nall,'float64')
         tmp2cb = np.zeros(self.nall,'float64')
-        BeamFac = np.zeros(self.nall,'float64')
-        tmpcb = np.zeros(self.nbin,'float64')
+        BeamFac = np.ones(self.nall,'float64')
         PoissonLevels = np.zeros(2,'float64')
         ADust = np.zeros(2,'float64')
         alphaDust = np.zeros(2,'float64')
@@ -2781,31 +2784,24 @@ class Likelihood_sptpol_500d_TEEE(Likelihood):
         arr7 = np.zeros(7,'float64')
         BeamFactors = np.zeros(2,'float64')
 
-        dl_fgs = np.zeros(self.spt_lrange,'float64')
-        cl_derivative = np.zeros((self.spt_lrange,2),'float64')
-        aberration = np.zeros((self.spt_lrange,2),'float64')
-        raw_spectra = np.zeros((self.spt_lrange+2,2),'float64')
+        cl_derivative = np.zeros((2,self.spt_lrange),'float64')
+        aberration = np.zeros((2,self.spt_lrange),'float64')
+        raw_spectra = np.zeros((2,self.spt_lrange+2),'float64')
 
         cl = self.get_cl(cosmo)
-        for i in range(self.spt_lrange+2):
-            dls[i,0] = cl['te'][int(self.ells[i])]*self.ells[i]*(self.ells[i]+1)/2./np.pi
-            dls[i,1] = cl['ee'][int(self.ells[i])]*self.ells[i]*(self.ells[i]+1)/2./np.pi
+        dls[0,:] = cl['te'][self.ells] * self.cl_to_dl_conversion
+        dls[1,:] = cl['ee'][self.ells] * self.cl_to_dl_conversion
 
         #Calculate derivatives for this position in parameter space.
-        for i in range(self.spt_lrange+2):
-            raw_spectra[i][0] = self.rawspec_factor[i] * dls[i,0]
-            raw_spectra[i][1] = self.rawspec_factor[i] * dls[i,1]
-        for i in range(self.spt_lrange):
-            cl_derivative[i][0] = self.deriv_factor[i] * (raw_spectra[i+2][0] - raw_spectra[i][0])
-            cl_derivative[i][1] = self.deriv_factor[i] * (raw_spectra[i+2][1] - raw_spectra[i][1])
+        raw_spectra[0,:] = self.rawspec_factor * dls[0,:]
+        raw_spectra[1,:] = self.rawspec_factor * dls[1,:]
+        cl_derivative[0,:] = self.deriv_factor * (raw_spectra[0,2:] - raw_spectra[0,:-2])
+        cl_derivative[1,:] = self.deriv_factor * (raw_spectra[1,2:] - raw_spectra[1,:-2])
 
         #Also get derives of the Dls for use with aberration corrections.
         if self.correct_aberration:
-            for i in range(self.spt_lrange):
-                aberration[i][0] = 0.5 * (dls[i+2][0]-dls[i][0])
-                aberration[i][0] = (-1*beta*dipole_cosine) * self.ells[i+1] * aberration[i][0]
-                aberration[i][1] = 0.5 * (dls[i+2][1]-dls[i][1])
-                aberration[i][1] = (-1*beta*dipole_cosine) * self.ells[i+1] * aberration[i][1]
+            aberration[0,:] = (dls[0,2:] - dls[0,:-2]) * self.aberration_factor
+            aberration[1,:] = (dls[1,2:] - dls[1,:-2]) * self.aberration_factor
 
         #DataParams for SPTpol likelihood are: [MapTcal, MapPcal, Czero_EE, CzeroTE, kappa, Adust_TE, alpha_TE, Adust_EE, alpha_EE]
         czero_psTE_150 = data.mcmc_parameters['czero_psTE_150']['current']*data.mcmc_parameters['czero_psTE_150']['scale']
@@ -2842,32 +2838,25 @@ class Likelihood_sptpol_500d_TEEE(Likelihood):
             #Note all the foregrounds are recorded in Dl at l=3000, so we divide by d3000 to get to a normalized Cl spectrum.
 
             #Start with Poisson power and subtract the kappa parameter for super sample lensing.
-            for j in range(self.spt_lrange):
-                dl_fgs[j] = (PoissonLevels[k] - Kappa*cl_derivative[j][k]) * self.cl_to_dl_conversion[j+1]
-                #Now add model CMB.
-                dl_fgs[j] = dl_fgs[j] + dls[j+1][k]
-                #Do we want to correct for aberration?
-                dl_fgs[j] = dl_fgs[j] + aberration[j][k]
-                #add dust foreground model (defined in Dl)
-                dl_fgs[j] = dl_fgs[j] + ADust[k]*(self.ells[j+1]/80.)**(alphaDust[k]+2.)
+            dl_fgs = (PoissonLevels[k] - Kappa*cl_derivative[k,:]) * self.cl_to_dl_conversion[1:-1] \
+                    + dls[k,1:-1] \
+                    + aberration[k,:] \
+                    + ADust[k]*(self.ells[1:-1]/80.)**(alphaDust[k]+2.)
 
             #Now bin into bandpowers with the window functions.
             tmpcb = np.dot(dl_fgs,self.windows[:,self.nbin*k:self.nbin+self.nbin*k])
             #scale theory spectrum by calibration:
-            tmpcb = tmpcb/CalFactors[k+1]
-            tmp2cb[self.nbin*k:self.nbin+self.nbin*k] = tmpcb[:]
+            tmpcb /= CalFactors[k+1]
+            tmp2cb[self.nbin*k:self.nbin+self.nbin*k] = tmpcb
 
-        BeamFac[:] = 1.
         for i in range(2):
-            for j in range(self.nall):
-                BeamFac[j] = BeamFac[j] * (1. + self.beam_err[j][i] * BeamFactors[i])
+            BeamFac += BeamFac * (self.beam_err[i,:] * BeamFactors[i])
 
-        deltacb = tmp2cb[:] * BeamFac[:]
+        deltacb = tmp2cb * BeamFac
         for k in range(self.bands_per_freq-1):
-            deltacb[self.nbin*k:self.nbin+self.nbin*k] = deltacb[self.nbin*k:self.nbin+self.nbin*k] - self.spec[:,k]
+            deltacb[self.nbin*k:self.nbin+self.nbin*k] = deltacb[self.nbin*k:self.nbin+self.nbin*k] - self.spec[k,:]
 
-        chi2 = 0.
-        chi2 = np.dot(deltacb, np.dot(np.linalg.inv(self.cov), deltacb))
+        chi2 = np.einsum('i,ij,j', deltacb, self.cov_inv, deltacb, optimize=True)
         #print("SPTpolEELnLike=", 0.5 * chi2)
 
         #beam prior
@@ -2899,7 +2888,7 @@ class Likelihood_sptpol_500d_TEEE(Likelihood):
             chi2 += ((alphaDust_EE - self.sptpol_meanAlphaEE)/self.sptpol_sigmaAlphaEE)**2
             #print("PriorLnLike=", 0.5 * ((alphaDust_EE - self.sptpol_meanAlphaEE)/self.sptpol_sigmaAlphaEE)**2)
 
-        lkl = -0.5 * chi2
+        lkl = - chi2 / 2
 
         return lkl
 
@@ -2919,9 +2908,11 @@ class Likelihood_sptpol_500d_lens(Likelihood):
         self.need_cosmo_arguments(data, {'non linear': 'halofit'})
 
         self.cl_lrange=self.cl_lmax-self.cl_lmin+1
-        self.ells = np.zeros(self.cl_lrange, 'float64')
+        self.ells = np.zeros(self.cl_lrange, 'uint64')
         for i in range(self.cl_lrange):
             self.ells[i] = self.cl_lmin+i
+        self.cl_to_dl_conversion = self.ells*(self.ells+1)/2./np.pi
+        self.pp_to_kk_conversion = self.ells**2*(self.ells+1)**2/2./np.pi
 
         #Read bandpowers
         self.ClHat = np.zeros(self.nbins, 'float64')
@@ -2946,6 +2937,7 @@ class Likelihood_sptpol_500d_lens(Likelihood):
         #Read covariance
         self.cov = np.zeros((self.nbins, self.nbins), 'float64')
         self.cov = np.loadtxt(os.path.join(self.data_directory, self.covmat_fiducial))
+        self.cov_inv = np.linalg.inv(self.cov)
 
         #Read windows
         self.windows = np.zeros((self.cl_lrange, self.nbins), 'float64')
@@ -2981,32 +2973,29 @@ class Likelihood_sptpol_500d_lens(Likelihood):
 
     def loglkl(self, cosmo, data):
 
-        clth = np.zeros((self.cl_lrange,4),'float64')
-        clthb = np.zeros(self.nbins,'float64')
-        deltab = np.zeros(self.nbins,'float64')
+        clth = np.zeros((4, self.cl_lrange),'float64')
 
         cl = self.get_cl(cosmo)
-        for i in range(self.cl_lrange):
-            clth[i,0] = cl['tt'][int(self.ells[i])]*self.ells[i]*(self.ells[i]+1)/2./np.pi
-            clth[i,1] = cl['ee'][int(self.ells[i])]*self.ells[i]*(self.ells[i]+1)/2./np.pi
-            clth[i,2] = cl['te'][int(self.ells[i])]*self.ells[i]*(self.ells[i]+1)/2./np.pi
-            clth[i,3] = cl['pp'][int(self.ells[i])]*self.ells[i]**2*(self.ells[i]+1)**2/2./np.pi
+        clth[0,:] = cl['tt'][self.ells]*self.cl_to_dl_conversion
+        clth[1,:] = cl['ee'][self.ells]*self.cl_to_dl_conversion
+        clth[2,:] = cl['te'][self.ells]*self.cl_to_dl_conversion
+        clth[3,:] = cl['pp'][self.ells]*self.pp_to_kk_conversion
 
         #Convert to bandpowers
-        clthb = np.dot(clth[:,3],self.windows)
+        clthb = np.dot(clth[3,:],self.windows)
 
         #Windows correction
-        for k in range(4):
-            clthb += np.dot(clth[:,k],self.windows_corr[:,k,0:self.nbins])
+        clthb += np.einsum('kl,lkb', clth, self.windows_corr[:,:,0:self.nbins], optimize=True)
 
         #Fiducial correction
-        clthb += - self.FiducialCorrection
+        clthb -= self.FiducialCorrection
 
         Aphiphi = data.mcmc_parameters['Aphiphi']['current']*data.mcmc_parameters['Aphiphi']['scale']
         deltab = Aphiphi*clthb - self.ClHat
 
-        chi2 = np.dot(deltab, np.dot(np.linalg.inv(self.cov), deltab))
+        chi2 = np.dot(deltab, np.dot(self.cov_inv, deltab))
+        chi2 = np.einsum('i,ij,j', deltab, self.cov_inv, deltab, optimize=True)
 
-        lkl = -0.5 * chi2
+        lkl = - chi2 / 2
 
         return lkl

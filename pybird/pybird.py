@@ -757,10 +757,7 @@ class Bird(object):
 
     def subtractShotNoise(self):
         """ For option: which='all'. Subtract the constant stochastic term from the (22-)loop """
-        for l in range(self.co.Nl):
-            for n in range(self.co.Nloop):
-                shotnoise = self.Ploopl[l, n, 0]
-                self.Ploopl[l, n] -= shotnoise
+        self.Ploopl -= self.Ploopl[:, :, 0][:, :, np.newaxis]
 
     def formatTaylor(self):
         """ An auxiliary to pipe PyBird with TBird: puts Bird(object) power spectrum multipole terms into the right shape for TBird """
@@ -850,7 +847,6 @@ def CoefWindow(N, window=1):
 
     return W
 
-
 class FFTLog(object):
     """
     A class implementing the FFTLog algorithm.
@@ -902,13 +898,13 @@ class FFTLog(object):
 
     def Coef(self, xin, f, extrap='extrap', window=1):
 
-        interpfunc = interp1d(xin, f, kind='cubic')
+        interpfunc = interp1d(xin, f, kind='cubic', bounds_error=False, fill_value=0.)
 
-        fx = np.empty(self.Nmax)
         tmp = np.empty(int(self.Nmax / 2 + 1), dtype=complex)
         Coef = np.empty(self.Nmax + 1, dtype=complex)
 
         if extrap is 'extrap':
+            fx = np.empty(self.Nmax)
             if xin[0] > self.x[0]:
                 #print ('low extrapolation')
                 nslow = (log(f[1]) - log(f[0])) / (log(xin[1]) - log(xin[0]))
@@ -927,22 +923,14 @@ class FFTLog(object):
                     fx[i] = interpfunc(self.x[i]) * exp(-self.bias * i * self.dx)
 
         elif extrap is'padding':
-            for i in range(self.Nmax):
-                if xin[0] > self.x[i]:
-                    fx[i] = 0.
-                elif xin[-1] < self.x[i]:
-                    fx[i] = 0.
-                else:
-                    fx[i] = interpfunc(self.x[i]) * exp(-self.bias * i * self.dx)
+            fx = interpfunc(self.x) * exp(-self.bias * np.arange(self.Nmax) * self.dx)
 
         tmp = rfft(fx)  # numpy
         # tmp = rfft(fx, planner_effort='FFTW_ESTIMATE')() ### pyfftw
 
-        for i in range(self.Nmax + 1):
-            if (i < self.Nmax / 2):
-                Coef[i] = np.conj(tmp[int(self.Nmax / 2 - i)]) * self.xmin**(-self.Pow[i]) / float(self.Nmax)
-            else:
-                Coef[i] = tmp[int(i - self.Nmax / 2)] * self.xmin**(-self.Pow[i]) / float(self.Nmax)
+        half_index = (self.Nmax+1) // 2
+        Coef[:half_index] = np.conj(tmp[half_index:self.Nmax%2:-1]) * self.xmin**(-self.Pow[:half_index]) / self.Nmax
+        Coef[half_index:] = tmp * self.xmin**(-self.Pow[half_index:]) / self.Nmax
 
         if window is not None:
             Coef = Coef * CoefWindow(self.Nmax, window=window)
@@ -1411,23 +1399,20 @@ class Resum(object):
                 u = 0
                 for j, (xy, k2pj, lpr) in enumerate(zip(XpYp, self.k2p, self.alllpr)):
                     IRcorrUnsorted = self.IRCorrection(xy * cl, k2pj, lpr=lpr, window=window)
-                    for v in range(len(lpr)):
-                        self.IR11[l, u + v] = IRcorrUnsorted[v]
+                    self.IR11[l, u:u+len(lpr)] = IRcorrUnsorted
                     u += len(lpr)
             for l, cl in enumerate(self.extractBAO(bird.Cct)):
                 u = 0
                 for j, (xy, k2pj, lpr) in enumerate(zip(XpYp, self.k2p, self.alllpr)):
                     IRcorrUnsorted = self.IRCorrection(xy * cl, k2pj, lpr=lpr, window=window)
-                    for v in range(len(lpr)):
-                        self.IRct[l, u + v] = IRcorrUnsorted[v]
+                    self.IRct[l, u:u+len(lpr)] = IRcorrUnsorted
                     u += len(lpr)
             for l, cl in enumerate(self.extractBAO(bird.Cloopl)):
                 for i, cli in enumerate(cl):
                     u = 0
                     for j, (xy, k2pj, lpr) in enumerate(zip(XpYp, self.k2p, self.alllpr)):
                         IRcorrUnsorted = self.IRCorrection(xy * cli, k2pj, lpr=lpr, window=window)
-                        for v in range(len(lpr)):
-                            self.IRloop[l, i, u + v] = IRcorrUnsorted[v]
+                        self.IRloop[l, i, u:u+len(lpr)] = IRcorrUnsorted
                         u += len(lpr)
             self.IR11resum[..., self.co.Nklow:] = np.einsum('lpn,pnk,pi->lik', self.Q[0], self.IR11, self.co.l11)
             self.IRctresum[..., self.co.Nklow:] = np.einsum('lpn,pnk,pi->lik', self.Q[1], self.IRct, self.co.lct)
@@ -1691,18 +1676,18 @@ class Projection(object):
 
         if many:
             dPcorr = np.zeros(shape=(PS.shape[0], PS.shape[1], len(kout)))
-            for j in range(PS.shape[1]):
-                for l in range(self.co.Nl):
-                    for lp in range(self.co.Nl):
-                        for i, k in enumerate(kout):
-                            if lp <= l:
-                                maskIR = (q_ref < k)
-                                dPcorr[l, j, i] += - 0.5 * fs * Dfc**2 * np.einsum('q,q,q,q->', q_ref[maskIR],
-                                                                                   dq_ref[maskIR], PS_interp[lp, j, maskIR], fllp_IR(2 * l, 2 * lp, k, q_ref[maskIR], Dfc))
-                            if lp >= l:
-                                maskUV = ((q_ref > k) & (q_ref < ktrust))
-                                dPcorr[l, j, i] += - 0.5 * fs * Dfc**2 * np.einsum('q,q,q,q->', q_ref[maskUV],
-                                                                                   dq_ref[maskUV], PS_interp[lp, j, maskUV], fllp_UV(2 * l, 2 * lp, k, q_ref[maskUV], Dfc))
+            for l in range(self.co.Nl):
+                for lp in range(self.co.Nl):
+                    for i, k in enumerate(kout):
+                        if lp <= l:
+                            maskIR = (q_ref < k)
+                            dPcorr[l, :, i] += - 0.5 * fs * Dfc**2 * np.einsum('q,q,qj,q->j', q_ref[maskIR],
+                                                                               dq_ref[maskIR], PS_interp[lp, :, maskIR], fllp_IR(2 * l, 2 * lp, k, q_ref[maskIR], Dfc))
+                            # the dimensions resulting from the advanced indexing operation come first in the result array when the advanced indexes are separated by a slice
+                        if lp >= l:
+                            maskUV = ((q_ref > k) & (q_ref < ktrust))
+                            dPcorr[l, :, i] += - 0.5 * fs * Dfc**2 * np.einsum('q,q,qj,q->j', q_ref[maskUV],
+                                                                               dq_ref[maskUV], PS_interp[lp, :, maskUV], fllp_UV(2 * l, 2 * lp, k, q_ref[maskUV], Dfc))
         else:
             dPcorr = np.zeros(shape=(PS.shape[0], len(kout)))
             for l in range(self.co.Nl):
